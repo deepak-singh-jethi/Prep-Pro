@@ -1,6 +1,5 @@
 // js/app.js
 import { generateUUID, formatDate } from './utils.js';
-// 1. ADDED: saveToCloud import
 import { saveToStorage, loadFromStorage, validateData, saveToCloud } from './storage.js';
 import { uiAlert, uiConfirm, uiPrompt, isDialogActive } from './dialogs.js'; 
 import { subjectOps } from './subjects.js';
@@ -8,7 +7,7 @@ import { analyticsOps } from './analytics.js';
 import { timerOps } from './timer.js';
 import { taskOps } from './tasks.js';
 import { systemOps } from './system.js';
-import { authOps } from './auth.js'; // 2. ADDED: Auth import
+import { authOps } from './auth.js';
 
 window.app = {
     
@@ -30,24 +29,41 @@ window.app = {
         user: null
     },
     
+    // --- Safe DOM Helper ---
+    safeId(id) {
+        return document.getElementById(id);
+    },
+
     // --- Dialog Wrappers ---
     uiAlert(msg) { return uiAlert(msg); },
     uiConfirm(msg) { return uiConfirm(msg); },
     uiPrompt(msg, val) { return uiPrompt(msg, val); },
 
-    // --- Analytics Wrappers ---
+    // --- Helper Functions ---
+    closeModal(id) { 
+        const el = this.safeId(id);
+        if (el) el.classList.add('hidden');
+    },
+    
+    openSettings() { 
+        const el = this.safeId('settingsModal');
+        if(el) el.classList.remove('hidden'); 
+    },
+    
+    toggleTheme() {
+        document.documentElement.classList.toggle('dark');
+        localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    },
+
+    // --- Module Wrappers ---
     setAnalyticsRange(days) { analyticsOps.setAnalyticsRange(days); },
     openAnalyticsDrill(sub) { analyticsOps.openAnalyticsDrill(sub); },
     closeAnalyticsDrill() { analyticsOps.closeAnalyticsDrill(); },
-
-    // --- Timer Wrappers ---
     startTimer(id) { timerOps.startTimer(id); },
     stopTimer(silent) { timerOps.stopTimer(silent); },
     toggleTimer() { timerOps.toggleTimer(); },
     toggleZenMode() { timerOps.toggleZenMode(); },
     openZenMode() { timerOps.toggleZenMode(true); },
-
-    // --- Task Wrappers ---
     createCardHTML(t, isDone) { return taskOps.createCardHTML(t, isDone); },
     openTaskModal(date, editId) { taskOps.openTaskModal(date, editId); },
     closeTaskModal() { taskOps.closeTaskModal(); },
@@ -60,29 +76,23 @@ window.app = {
     quickSchedule(type, payload) { taskOps.quickSchedule(type, payload); },
     prepSafeAction(type, subject, topic) { taskOps.prepSafeAction(type, subject, topic); },
     assignToToday(id) { taskOps.assignToToday(id); },
-    
-    // Task HTML Helpers
     populateEditForm(id) { taskOps.populateEditForm(id); },
     resetForm() { taskOps.resetForm(); },
     updateSubSubjects() { taskOps.updateSubSubjects(); },
     renderDayManagerList(date) { taskOps.renderDayManagerList(date); },
     loadRevisionTopics() { taskOps.loadRevisionTopics(); },
-
-    // --- System Wrappers  ---
     exportData() { systemOps.exportData(); },
     importData(input) { systemOps.importData(input); },
     restoreSafetyBackup() { systemOps.restoreSafetyBackup(); },
     checkBackupStatus() { systemOps.checkBackupStatus(); },
-
-    // --- Auth Wrappers (ADDED) ---
     loginGoogle() { authOps.loginGoogle(); },
     logout() { authOps.logout(); },
+    
     handleEmailAuth(e) {
         const form = e.target;
         const email = form.email.value;
         const password = form.password.value;
         const action = form.dataset.action || 'login'; 
-
         if (action === 'register') {
             authOps.registerEmail(email, password);
         } else {
@@ -91,44 +101,47 @@ window.app = {
     },
 
     // --- Initialization ---
-    init() {
+    async init() {
         window.subjActions = subjectOps;
+        
+        // 1. Load Local Data First (Instant UI)
         this.loadData();
+        
+        // 2. WAIT for Auth + Cloud Sync
+        const user = await authOps.init(); 
+
+        // 3. Post-Auth Initialization
         taskOps.checkBacklog(); 
         timerOps.restoreTimerState();
         systemOps.checkBackupStatus();
         this.setupKeyboardShortcuts();
         
-        // 3. CHANGED: Wait for Auth instead of rendering immediately
-        authOps.init(); 
+        // 4. Navigation
+        if(user) {
+            this.navigate('dashboard');
+        } else {
+            this.navigate('landing');
+        }
     },
 
     setupKeyboardShortcuts() {
         document.addEventListener('keydown', async (e) => {
             if (isDialogActive()) return;
-
             if (e.key === 'Escape') {
                 const modals = Array.from(document.querySelectorAll('.modal')).filter(m => !m.classList.contains('hidden') && m.id !== 'uiDialogContainer');
-                if (modals.length === 0) return;
-                const top = modals[modals.length - 1];
-
-                if (top.id === 'taskModal') {
-                    const editId = document.getElementById('taskEditId')?.value;
-                    const isDirty = !!editId; 
-                    if (isDirty) {
-                        const proceed = await this.uiConfirm("You have unsaved changes. Close anyway?");
-                        if (!proceed) return;
-                    }
+                if (modals.length > 0) {
+                    modals[modals.length - 1].classList.add('hidden');
                 }
-                top.classList.add('hidden');
             }
         });
     },
 
+    // --- Save Logic (Cloud Connected) ---
     saveData(options = { render: true }) {
         saveToStorage(this.data);
-        saveToCloud(this.data); // 4. ADDED: Cloud Sync Trigger
-        
+        if (this.data.user) {
+            saveToCloud(this.data); // Cloud Sync
+        }
         if (options.render) {
             this.scheduleRender();
         }
@@ -158,7 +171,6 @@ window.app = {
         }
     },
 
-    // --- Navigation ---
     navigate(view) {
         this.data.currentView = view;
         
@@ -166,9 +178,9 @@ window.app = {
             analyticsOps.closeAnalyticsDrill();
         }
 
-        // Handle Sidebar/Header Visibility for Login Page
-        const sidebar = document.querySelector('aside');
-        const header = document.querySelector('header');
+        const sidebar = this.safeId('mainSidebar');
+        const header = this.safeId('mainHeader');
+        
         if (view === 'landing') {
             if(sidebar) sidebar.classList.add('hidden');
             if(header) header.classList.add('hidden');
@@ -179,16 +191,15 @@ window.app = {
 
         document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
         
-        // Safety Check
-        const targetView = document.getElementById(`view-${view}`);
-        if(targetView) targetView.classList.remove('hidden');
+        const activeView = this.safeId(`view-${view}`);
+        if(activeView) activeView.classList.remove('hidden');
 
         document.querySelectorAll('.nav-item').forEach(el => {
             el.classList.remove('bg-indigo-50', 'text-primary', 'dark:bg-gray-700', 'dark:text-indigo-400', 'font-bold');
             el.classList.add('text-gray-500', 'dark:text-gray-400');
         });
 
-        const activeBtn = document.getElementById(`nav-${view}`);
+        const activeBtn = this.safeId(`nav-${view}`);
         if (activeBtn) {
             activeBtn.classList.add('bg-indigo-50', 'text-primary', 'dark:bg-gray-700', 'dark:text-indigo-400', 'font-bold');
             activeBtn.classList.remove('text-gray-500', 'dark:text-gray-400');
@@ -196,37 +207,31 @@ window.app = {
         this.render();
     },
 
-    toggleTheme() {
-        document.documentElement.classList.toggle('dark');
-        localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
-    },
-
-    openSettings() { document.getElementById('settingsModal').classList.remove('hidden'); },
-    
     // --- Core Render Loop ---
     render() {
-        // Safety Check for Login Page
-        if (!document.getElementById('view-dashboard')) return;
+        if (!this.safeId('view-dashboard')) return;
 
         this.renderHeader();
         this.renderDashboard();
         this.renderCalendar();
         this.renderSubjects();
 
-        try { analyticsOps.renderAnalytics(); } catch (e) { console.warn("Analytics render skipped", e); }
+        try { analyticsOps.renderAnalytics(); } catch (e) { console.warn("Analytics error", e); }
         taskOps.renderBacklog();
         timerOps.updateGlobalTimerUI();
 
-        const zenOverlay = document.getElementById('zenModeOverlay');
+        const zenOverlay = this.safeId('zenModeOverlay');
         if (this.data.isZenMode && this.data.activeTimer) {
-            zenOverlay.classList.remove('hidden');
+            if(zenOverlay) zenOverlay.classList.remove('hidden');
             const task = this.data.tasks.find(t => t.id === this.data.activeTimer.id);
             if (task) {
-                document.getElementById('zenSubject').innerText = task.subject;
-                document.getElementById('zenTaskName').innerText = task.subSubject;
+                const zenSub = this.safeId('zenSubject');
+                const zenTask = this.safeId('zenTaskName');
+                if(zenSub) zenSub.innerText = task.subject;
+                if(zenTask) zenTask.innerText = task.subSubject;
             }
             const isRunning = this.data.activeTimer.startTime !== null;
-            const zenBtn = document.getElementById('zenPauseBtn');
+            const zenBtn = this.safeId('zenPauseBtn');
             if (zenBtn) {
                 if (isRunning) {
                     zenBtn.querySelector('i').className = "fas fa-pause text-2xl md:text-3xl text-amber-400";
@@ -242,26 +247,32 @@ window.app = {
     },
 
     renderHeader() {
-        const opts = { weekday: 'short', month: 'short', day: 'numeric' };
-        document.getElementById('currentDateDisplay').textContent = new Date().toLocaleDateString('en-US', opts);
+        const dateEl = this.safeId('currentDateDisplay');
+        if(dateEl) dateEl.textContent = new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 
         const target = new Date(this.data.targetDate);
         const diff = target - new Date();
         const daysLeft = Math.ceil(diff / (1000 * 60 * 60 * 24));
-        document.getElementById('countdownTimer').textContent = daysLeft > 0 ? `${daysLeft}d` : "NOW";
-        document.getElementById('targetDateDisplay').textContent = target.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
-
+        
+        const countEl = this.safeId('countdownTimer');
+        if(countEl) countEl.textContent = daysLeft > 0 ? `${daysLeft}d` : "NOW";
+        
+        const targetEl = this.safeId('targetDateDisplay');
+        if(targetEl) targetEl.textContent = target.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+        
         const todayStr = formatDate(new Date());
         const activeToday = this.data.tasks.some(t => t.date === todayStr && t.status === 'done');
-        const streakEl = document.getElementById('streakDisplay');
-        if (activeToday) {
-            streakEl.innerHTML = `<i class="fas fa-fire text-orange-500 animate-pulse"></i> <span class="text-orange-600 dark:text-orange-400">Streak Active</span>`;
-        } else {
-            streakEl.innerHTML = `<i class="fas fa-snowflake text-blue-300"></i> <span class="text-gray-400">Get Started</span>`;
+        const streakEl = this.safeId('streakDisplay');
+        if (streakEl) {
+            if (activeToday) {
+                streakEl.innerHTML = `<i class="fas fa-fire text-orange-500 animate-pulse"></i> <span class="text-orange-600 dark:text-orange-400">Streak Active</span>`;
+            } else {
+                streakEl.innerHTML = `<i class="fas fa-snowflake text-blue-300"></i> <span class="text-gray-400">Get Started</span>`;
+            }
         }
     },
 
-    // --- Restored Logic for Dashboard ---
+    // --- RESTORED FEATURE: Strategy Engine ---
     computePhase3Signal(allTasks, targetDateStr, subjects) {
         const now = new Date();
         const day14 = new Date(); day14.setDate(now.getDate() - 14);
@@ -281,6 +292,7 @@ window.app = {
         const target = new Date(targetDateStr);
         const weeksLeft = (target - now) / (1000 * 60 * 60 * 24 * 7);
 
+        // 1. Mock Test Alert
         if (weeksLeft <= 12) {
             const recentMocks = allTasks.filter(t =>
                 new Date(t.date) >= day30 &&
@@ -298,6 +310,7 @@ window.app = {
             }
         }
 
+        // 2. Revision Alert
         const topicLastSeen = {};
         allTasks.forEach(t => {
             if (t.status === 'done') {
@@ -337,11 +350,11 @@ window.app = {
         this.renderDashboard();
     },
 
-    // --- Restored Dashboard UI ---
+    // --- RESTORED UI: Dashboard ---
     renderDashboard() {
         if (this.data.currentView !== 'dashboard') return;
 
-        const dashboardContainer = document.getElementById('view-dashboard');
+        const dashboardContainer = this.safeId('view-dashboard');
         if (!dashboardContainer) return;
 
         const todayStr = formatDate(new Date());
@@ -349,7 +362,6 @@ window.app = {
         const todayTasks = allTasks.filter(t => t.date === todayStr && t.status !== 'backlog');
 
         let focusTask = this.data.activeTimer ? allTasks.find(t => t.id === this.data.activeTimer.id) : null;
-
         const targetDate = new Date(this.data.targetDate);
         const daysLeft = Math.ceil((targetDate - new Date()) / (1000 * 60 * 60 * 24));
         const doneAll = allTasks.filter(t => t.status === 'done').length;
@@ -358,13 +370,12 @@ window.app = {
         const completedToday = todayTasks.filter(t => t.status === 'done').length;
         const totalToday = todayTasks.length;
         const progressPct = totalToday > 0 ? Math.round((completedToday / totalToday) * 100) : 0;
-
+        
         const sevenDaysAgo = new Date(); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
         const recentTasks = allTasks.filter(t => new Date(t.date) >= sevenDaysAgo);
         const totalHours = Math.round(recentTasks.reduce((acc, t) => acc + (t.actualTime || 0), 0) / 60);
         const isLowData = totalHours < 6;
 
-        // Restore innerHTML structure
         dashboardContainer.innerHTML = `
             <div id="dashQuickActions" class="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-200 dark:border-gray-700 pb-4 shrink-0">
                 <div>
@@ -438,113 +449,126 @@ window.app = {
             </div>
         `;
 
-        const focusEl = document.getElementById('dashFocusCard');
-        if (focusTask) {
-            focusEl.innerHTML = `
-                <div id="active-hero-card" class="rounded-2xl p-6 md:p-8 border border-emerald-500/50 bg-white dark:bg-gray-800 relative group shadow-lg shadow-emerald-500/10 transition-all duration-500 overflow-hidden">
-                    <div id="active-hero-progress" class="absolute top-0 bottom-0 left-0 bg-emerald-500/10 transition-all duration-1000 ease-linear pointer-events-none" style="width: 0%"></div>
-                    <div class="relative z-10">
-                        <div class="flex justify-between items-start mb-4">
-                            <div class="flex items-center gap-2">
-                                <span class="relative flex h-2.5 w-2.5">
-                                  <span id="active-hero-ping" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                  <span id="active-hero-dot" class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+        const focusEl = this.safeId('dashFocusCard');
+        if (focusEl) {
+            if (focusTask) {
+                focusEl.innerHTML = `
+                    <div id="active-hero-card" class="rounded-2xl p-6 md:p-8 border border-emerald-500/50 bg-white dark:bg-gray-800 relative group shadow-lg shadow-emerald-500/10 transition-all duration-500 overflow-hidden">
+                        <div id="active-hero-progress" class="absolute top-0 bottom-0 left-0 bg-emerald-500/10 transition-all duration-1000 ease-linear pointer-events-none" style="width: 0%"></div>
+                        <div class="relative z-10">
+                            <div class="flex justify-between items-start mb-4">
+                                <div class="flex items-center gap-2">
+                                    <span class="relative flex h-2.5 w-2.5">
+                                      <span id="active-hero-ping" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                      <span id="active-hero-dot" class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                                    </span>
+                                    <span id="active-hero-status" class="text-[10px] font-bold uppercase tracking-widest text-emerald-500">Session Active</span>
+                                </div>
+                                <span class="text-xs font-mono font-bold text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-black/20 px-2 py-1 rounded-lg border border-gray-200 dark:border-white/10">
+                                    ${focusTask.duration}m Target
                                 </span>
-                                <span id="active-hero-status" class="text-[10px] font-bold uppercase tracking-widest text-emerald-500">Session Active</span>
                             </div>
-                            <span class="text-xs font-mono font-bold text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-black/20 px-2 py-1 rounded-lg border border-gray-200 dark:border-white/10">
-                                ${focusTask.duration}m Target
-                            </span>
+                            <h2 class="text-3xl font-extrabold text-gray-900 dark:text-white leading-tight mb-1 tracking-tight">${focusTask.subSubject}</h2>
+                            <p class="text-sm font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-5 flex items-center gap-2">
+                                <i class="fas fa-book text-xs opacity-50"></i> ${focusTask.subject}
+                            </p>
+                            <button onclick="app.openZenMode()" class="w-full py-4 rounded-xl font-bold text-sm uppercase tracking-widest shadow-lg shadow-emerald-500/20 transition-transform active:scale-[0.98] bg-emerald-500 hover:bg-emerald-600 text-white flex items-center justify-center gap-2 group/btn">
+                                <span>Open Focus Mode</span>
+                                <i class="fas fa-expand text-xs group-hover/btn:scale-110 transition-transform"></i>
+                            </button>
                         </div>
-                        <h2 class="text-3xl font-extrabold text-gray-900 dark:text-white leading-tight mb-1 tracking-tight">${focusTask.subSubject}</h2>
-                        <p class="text-sm font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-5 flex items-center gap-2">
-                            <i class="fas fa-book text-xs opacity-50"></i> ${focusTask.subject}
-                        </p>
-                        <button onclick="app.openZenMode()" class="w-full py-4 rounded-xl font-bold text-sm uppercase tracking-widest shadow-lg shadow-emerald-500/20 transition-transform active:scale-[0.98] bg-emerald-500 hover:bg-emerald-600 text-white flex items-center justify-center gap-2 group/btn">
-                            <span>Open Focus Mode</span>
-                            <i class="fas fa-expand text-xs group-hover/btn:scale-110 transition-transform"></i>
+                    </div>`;
+            } else {
+                focusEl.innerHTML = `
+                    <div class="flex flex-col items-center justify-center py-12 bg-white dark:bg-dark-surface rounded-2xl border-2 border-dashed border-gray-200 dark:border-dark-border group hover:border-primary/30 transition-colors">
+                        <div class="w-16 h-16 bg-gray-50 dark:bg-gray-800 rounded-full flex items-center justify-center mb-4 text-2xl text-gray-300 group-hover:text-primary group-hover:scale-110 transition-all duration-300">
+                            <i class="fas fa-coffee"></i>
+                        </div>
+                        <p class="text-gray-500 dark:text-gray-400 font-medium text-sm mb-4">Ready to start?</p>
+                        <button onclick="app.openTaskModal()" class="bg-primary text-white hover:bg-primary-700 font-bold text-sm px-6 py-3 rounded-xl shadow-lg shadow-primary/20 transition-transform active:scale-95 flex items-center gap-2">
+                            <i class="fas fa-plus"></i> Add Anchor Task
                         </button>
-                    </div>
-                </div>`;
-        } else {
-            focusEl.innerHTML = `
-                <div class="flex flex-col items-center justify-center py-12 bg-white dark:bg-dark-surface rounded-2xl border-2 border-dashed border-gray-200 dark:border-dark-border group hover:border-primary/30 transition-colors">
-                    <div class="w-16 h-16 bg-gray-50 dark:bg-gray-800 rounded-full flex items-center justify-center mb-4 text-2xl text-gray-300 group-hover:text-primary group-hover:scale-110 transition-all duration-300">
-                        <i class="fas fa-coffee"></i>
-                    </div>
-                    <p class="text-gray-500 dark:text-gray-400 font-medium text-sm mb-4">Ready to start?</p>
-                    <button onclick="app.openTaskModal()" class="bg-primary text-white hover:bg-primary-700 font-bold text-sm px-6 py-3 rounded-xl shadow-lg shadow-primary/20 transition-transform active:scale-95 flex items-center gap-2">
-                        <i class="fas fa-plus"></i> Add Anchor Task
-                    </button>
-                </div>`;
+                    </div>`;
+            }
         }
 
-        const remainingEl = document.getElementById('dashRemainingList');
-        const remainingTasks = todayTasks.filter(t => t.id !== (focusTask?.id) && t.status !== 'done');
-        remainingEl.innerHTML = remainingTasks.length === 0
-            ? `<div class="text-xs text-gray-400 italic py-4 text-center border border-dashed border-gray-200 dark:border-gray-700 rounded-xl">No other tasks remaining.</div>`
-            : remainingTasks.map(t => this.createCardHTML(t, false)).join('');
-
-        const completedContainer = document.getElementById('dashCompletedListContainer');
-        const doneTasks = todayTasks.filter(t => t.status === 'done');
-        
-        if (doneTasks.length === 0) {
-            completedContainer.innerHTML = `<h3 class="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2 opacity-75"><span class="w-2 h-2 rounded-full bg-emerald-400"></span> Completed Today</h3><div class="text-xs text-gray-400 italic py-4 text-center opacity-50">Nothing completed yet.</div>`;
-        } else {
-            const completedHtml = doneTasks.map(t => this.createCardHTML(t, true)).join('');
-            completedContainer.innerHTML = `
-                <details ${doneTasks.length < 3 ? 'open' : ''} class="group">
-                    <summary class="list-none flex items-center gap-2 cursor-pointer mb-4 select-none opacity-75 hover:opacity-100 transition-opacity">
-                        <i class="fas fa-chevron-right text-[10px] text-gray-400 transition-transform group-open:rotate-90"></i>
-                        <h3 class="text-xs font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
-                            <span class="w-2 h-2 rounded-full bg-emerald-400"></span> 
-                            Completed Today <span class="bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-300 px-1.5 rounded text-[10px]">${doneTasks.length}</span>
-                        </h3>
-                    </summary>
-                    <div id="dashCompletedList" class="space-y-3 opacity-80 pl-2 border-l border-gray-200 dark:border-gray-700 ml-1">${completedHtml}</div>
-                </details>`;
+        const remainingEl = this.safeId('dashRemainingList');
+        if (remainingEl) {
+            const remainingTasks = todayTasks.filter(t => t.id !== (focusTask?.id) && t.status !== 'done');
+            remainingEl.innerHTML = remainingTasks.length === 0
+                ? `<div class="text-xs text-gray-400 italic py-4 text-center border border-dashed border-gray-200 dark:border-gray-700 rounded-xl">No other tasks remaining.</div>`
+                : remainingTasks.map(t => this.createCardHTML(t, false)).join('');
         }
 
+        const completedContainer = this.safeId('dashCompletedListContainer');
+        if (completedContainer) {
+            const doneTasks = todayTasks.filter(t => t.status === 'done');
+            if (doneTasks.length === 0) {
+                completedContainer.innerHTML = `<h3 class="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2 opacity-75"><span class="w-2 h-2 rounded-full bg-emerald-400"></span> Completed Today</h3><div class="text-xs text-gray-400 italic py-4 text-center opacity-50">Nothing completed yet.</div>`;
+            } else {
+                const completedHtml = doneTasks.map(t => this.createCardHTML(t, true)).join('');
+                completedContainer.innerHTML = `
+                    <details ${doneTasks.length < 3 ? 'open' : ''} class="group">
+                        <summary class="list-none flex items-center gap-2 cursor-pointer mb-4 select-none opacity-75 hover:opacity-100 transition-opacity">
+                            <i class="fas fa-chevron-right text-[10px] text-gray-400 transition-transform group-open:rotate-90"></i>
+                            <h3 class="text-xs font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
+                                <span class="w-2 h-2 rounded-full bg-emerald-400"></span> 
+                                Completed Today <span class="bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-300 px-1.5 rounded text-[10px]">${doneTasks.length}</span>
+                            </h3>
+                        </summary>
+                        <div id="dashCompletedList" class="space-y-3 opacity-80 pl-2 border-l border-gray-200 dark:border-gray-700 ml-1">${completedHtml}</div>
+                    </details>`;
+            }
+        }
+
+        // --- Logic that caused your error ---
         const signal = this.computePhase3Signal(allTasks, this.data.targetDate, this.data.subjects);
-        const stratEl = document.getElementById('dashStrategyCard');
-        if (signal) {
-            stratEl.innerHTML = `
-                <div class="bg-amber-50 dark:bg-amber-900/20 rounded-xl p-4 border border-amber-100 dark:border-amber-800/50 flex flex-col gap-3">
-                    <div>
-                        <h4 class="text-[10px] font-bold uppercase tracking-widest text-amber-600 dark:text-amber-500 mb-1 flex items-center gap-2"><i class="fas fa-lightbulb"></i> Strategy</h4>
-                        <p class="text-sm font-bold text-gray-900 dark:text-gray-100 leading-snug">${signal.text}</p>
-                    </div>
-                    <div class="flex items-center gap-3">
-                        <button onclick="app.executeStrategyAction('${signal.ctaAction.replace(/'/g, "\\'")}')" class="bg-amber-100 hover:bg-amber-200 dark:bg-amber-800 dark:hover:bg-amber-700 text-amber-900 dark:text-amber-100 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors">${signal.ctaLabel}</button>
-                        <button onclick="app.snoozeStrategy()" class="text-xs font-medium text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">Snooze</button>
-                    </div>
-                </div>`;
-            stratEl.classList.remove('hidden');
+        const stratEl = this.safeId('dashStrategyCard');
+        if (stratEl) {
+            if (signal) {
+                stratEl.innerHTML = `
+                    <div class="bg-amber-50 dark:bg-amber-900/20 rounded-xl p-4 border border-amber-100 dark:border-amber-800/50 flex flex-col gap-3">
+                        <div>
+                            <h4 class="text-[10px] font-bold uppercase tracking-widest text-amber-600 dark:text-amber-500 mb-1 flex items-center gap-2"><i class="fas fa-lightbulb"></i> Strategy</h4>
+                            <p class="text-sm font-bold text-gray-900 dark:text-gray-100 leading-snug">${signal.text}</p>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <button onclick="app.executeStrategyAction('${signal.ctaAction.replace(/'/g, "\\'")}')" class="bg-amber-100 hover:bg-amber-200 dark:bg-amber-800 dark:hover:bg-amber-700 text-amber-900 dark:text-amber-100 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors">${signal.ctaLabel}</button>
+                            <button onclick="app.snoozeStrategy()" class="text-xs font-medium text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">Snooze</button>
+                        </div>
+                    </div>`;
+                stratEl.classList.remove('hidden');
+            } else {
+                stratEl.classList.add('hidden');
+            }
         }
 
         const backlogCount = allTasks.filter(t => t.status === 'backlog').length;
-        const blEl = document.getElementById('dashBacklogWhisper');
-        if (backlogCount > 0) {
-            blEl.classList.remove('hidden');
-            document.getElementById('backlogText').innerText = `You have ${backlogCount} postponed items pending.`;
-        } else {
-            blEl.classList.add('hidden');
+        const blEl = this.safeId('dashBacklogWhisper');
+        if (blEl) {
+            if (backlogCount > 0) {
+                blEl.classList.remove('hidden');
+                document.getElementById('backlogText').innerText = `You have ${backlogCount} postponed items pending.`;
+            } else {
+                blEl.classList.add('hidden');
+            }
         }
     },
 
-    // --- Restored Calendar UI ---
+    // --- RESTORED UI: Calendar (Heatmap) ---
     renderCalendar() {
         if (this.data.currentView !== 'calendar') return;
 
-        const grid = document.getElementById('calendarGrid');
+        const grid = this.safeId('calendarGrid');
+        if (!grid) return;
         grid.innerHTML = '';
 
         const year = this.data.calendarMonth.getFullYear();
         const month = this.data.calendarMonth.getMonth();
         const todayStr = formatDate(new Date());
 
-        document.getElementById('calendarMonthLabel').innerText =
-            this.data.calendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+        const monthLabel = this.safeId('calendarMonthLabel');
+        if (monthLabel) monthLabel.innerText = this.data.calendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
         const daysInMonth = new Date(year, month + 1, 0).getDate();
         const firstDay = new Date(year, month, 1).getDay();
@@ -564,9 +588,7 @@ window.app = {
             let totalTasks = tasksForDay.length;
 
             if (totalTasks > 0) {
-                const score = tasksForDay.reduce(
-                    (acc, t) => acc + (t.status === 'done' ? 1 : (t.status === 'partial' ? 0.5 : 0)), 0
-                );
+                const score = tasksForDay.reduce((acc, t) => acc + (t.status === 'done' ? 1 : (t.status === 'partial' ? 0.5 : 0)), 0);
                 pct = Math.round((score / totalTasks) * 100);
 
                 if (!isFuture) {
@@ -623,6 +645,7 @@ window.app = {
         }
     },
 
+    // --- RESTORED UI: Subjects ---
     renderSubjects() {
         if (this.data.currentView !== 'subjects') return;
 
@@ -700,6 +723,7 @@ window.app = {
         e.target.reset();
     },
 
+    // --- RESTORED FEATURE: Remove/Archive SubSubject ---
     async removeSubSubject(subId, topicName) {
         const subject = this.data.subjects.find(s => s.id === subId);
         if (!subject) return;

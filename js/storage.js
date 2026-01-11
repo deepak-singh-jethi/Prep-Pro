@@ -35,11 +35,12 @@ export function loadFromStorage() {
     }
 }
 
-// --- CLOUD SYNC (The Missing Part) ---
+// --- CLOUD SYNC (Guarded) ---
 
 export async function saveToCloud(data) {
+    // FIX: Guard clause - Don't write if not logged in
     const user = auth.currentUser;
-    if (!user) return; // Only save if logged in
+    if (!user) return; 
 
     try {
         const payload = {
@@ -65,7 +66,7 @@ export async function loadFromCloud(uid) {
         if (docSnap.exists()) {
             return docSnap.data();
         } else {
-            return null; // User exists but has no data yet
+            return null; 
         }
     } catch (e) {
         console.error("Cloud Load Error:", e);

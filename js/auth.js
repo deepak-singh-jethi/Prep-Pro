@@ -1,4 +1,3 @@
-// js/auth.js
 import { auth } from './firebase-config.js';
 import { loadFromCloud } from './storage.js'; 
 import { 
@@ -15,50 +14,61 @@ const googleProvider = new GoogleAuthProvider();
 
 export const authOps = {
     
+    // CHANGED: Returns a Promise so app.js can await it
     init: () => {
-        onAuthStateChanged(auth, async (user) => {
-            const app = window.app; 
-            
-            if (user) {
-                app.data.user = {
-                    uid: user.uid,
-                    email: user.email,
-                    displayName: user.displayName || user.email.split('@')[0],
-                    photoURL: user.photoURL
-                };
+        return new Promise((resolve) => {
+            const unsubscribe = onAuthStateChanged(auth, async (user) => {
+                const app = window.app; 
                 
-                console.log("✅ Auth Success:", app.data.user.email);
-                authOps.updateUI(true);
+                if (user) {
+                    app.data.user = {
+                        uid: user.uid,
+                        email: user.email,
+                        displayName: user.displayName || user.email.split('@')[0],
+                        photoURL: user.photoURL
+                    };
+                    
+                    console.log("✅ Auth Success:", app.data.user.email);
+                    authOps.updateUI(true);
 
-                // --- CLOUD SYNC ---
-                const cloudData = await loadFromCloud(user.uid);
-                
-                if (cloudData) {
-                    console.log("📥 Downloading data from cloud...");
-                    app.data.tasks = cloudData.tasks || [];
-                    app.data.subjects = cloudData.subjects || [];
-                    app.data.targetDate = cloudData.targetDate || app.data.targetDate;
-                    app.saveData({ render: true }); 
+                    // --- CLOUD SYNC START ---
+                    try {
+                        const cloudData = await loadFromCloud(user.uid);
+                        if (cloudData) {
+                            console.log("📥 Downloading data from cloud...");
+                            app.data.tasks = cloudData.tasks || [];
+                            app.data.subjects = cloudData.subjects || [];
+                            app.data.targetDate = cloudData.targetDate || app.data.targetDate;
+                            
+                            // Silent save to sync local storage, NO render yet (app.init handles it)
+                            app.saveData({ render: false }); 
+                        } else {
+                            console.log("📤 First login: Uploading local data.");
+                            app.saveData({ render: false });
+                        }
+                    } catch (e) {
+                        console.error("Sync failed:", e);
+                    }
+                    // --- CLOUD SYNC END ---
+
                 } else {
-                    console.log("📤 First login: Uploading local data to cloud.");
-                    app.saveData({ render: false });
+                    app.data.user = null;
+                    console.log("🔒 User logged out");
+                    authOps.updateUI(false);
                 }
 
-                app.navigate('dashboard');
-            } else {
-                app.data.user = null;
-                console.log("🔒 User logged out");
-                authOps.updateUI(false);
-                app.navigate('landing');
-            }
+                // Remove Loader
+                const loader = document.getElementById('app-loading-screen');
+                if (loader) {
+                    loader.classList.add('opacity-0', 'pointer-events-none');
+                    setTimeout(() => {
+                        if (loader.parentNode) loader.parentNode.removeChild(loader);
+                    }, 500);
+                }
 
-            const loader = document.getElementById('app-loading-screen');
-            if (loader) {
-                loader.classList.add('opacity-0', 'pointer-events-none');
-                setTimeout(() => {
-                    if (loader.parentNode) loader.parentNode.removeChild(loader);
-                }, 500);
-            }
+                // Resolve the promise to let app.js continue
+                resolve(user); 
+            });
         });
     },
 
@@ -67,6 +77,7 @@ export const authOps = {
             await signInWithPopup(auth, googleProvider);
             document.getElementById('authModal').classList.add('hidden');
             await uiAlert("Welcome back, Scholar!");
+            window.app.navigate('dashboard'); // Explicit nav on manual login
         } catch (error) {
             console.error(error);
             await uiAlert(`Login Failed: ${error.message}`);
@@ -77,6 +88,7 @@ export const authOps = {
         try {
             await signInWithEmailAndPassword(auth, email, password);
             document.getElementById('authModal').classList.add('hidden');
+            window.app.navigate('dashboard');
         } catch (error) {
             await uiAlert(`Login Failed: ${error.message}`);
         }
@@ -87,6 +99,7 @@ export const authOps = {
             await createUserWithEmailAndPassword(auth, email, password);
             document.getElementById('authModal').classList.add('hidden');
             await uiAlert("Account created successfully!");
+            window.app.navigate('dashboard');
         } catch (error) {
             await uiAlert(`Signup Failed: ${error.message}`);
         }
@@ -96,6 +109,7 @@ export const authOps = {
         try {
             await signOut(auth);
             await uiAlert("Logged out successfully.");
+            window.app.navigate('landing');
         } catch (error) {
             console.error(error);
         }
@@ -107,17 +121,18 @@ export const authOps = {
         const userImg = document.getElementById('navUserImg');
         const userName = document.getElementById('navUserName');
         
-        if (isLoggedIn && window.app.data.user) {
-            if (loginBtn) loginBtn.classList.add('hidden');
-            if (userProfile) userProfile.classList.remove('hidden');
-            
-            if (userImg) {
-                userImg.src = window.app.data.user.photoURL || `https://ui-avatars.com/api/?name=${window.app.data.user.displayName}&background=random`;
+        // Safety check if elements exist (Fixes potential null crash)
+        if (loginBtn && userProfile) {
+            if (isLoggedIn && window.app.data.user) {
+                loginBtn.classList.add('hidden');
+                userProfile.classList.remove('hidden');
+                
+                if (userImg) userImg.src = window.app.data.user.photoURL || `https://ui-avatars.com/api/?name=${window.app.data.user.displayName}&background=random`;
+                if (userName) userName.textContent = window.app.data.user.displayName;
+            } else {
+                loginBtn.classList.remove('hidden');
+                userProfile.classList.add('hidden');
             }
-            if (userName) userName.textContent = window.app.data.user.displayName;
-        } else {
-            if (loginBtn) loginBtn.classList.remove('hidden');
-            if (userProfile) userProfile.classList.add('hidden');
         }
     }
 };
