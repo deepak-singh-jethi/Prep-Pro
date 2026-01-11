@@ -746,7 +746,7 @@ window.app = {
     },
 
     changeMonth(delta) { this.data.calendarMonth.setMonth(this.data.calendarMonth.getMonth() + delta); this.render(); },
-    closeModal(id) { document.getElementById(id).classList.add('hidden'); },
+   
 };
 
 // Initialize App

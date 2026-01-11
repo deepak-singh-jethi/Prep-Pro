@@ -1,3 +1,4 @@
+// js/auth.js
 import { auth } from './firebase-config.js';
 import { loadFromCloud } from './storage.js'; 
 import { 
@@ -14,10 +15,12 @@ const googleProvider = new GoogleAuthProvider();
 
 export const authOps = {
     
-    // CHANGED: Returns a Promise so app.js can await it
+    // FIX #1: Promise resolves exactly once (Stabilized Init)
     init: () => {
         return new Promise((resolve) => {
-            const unsubscribe = onAuthStateChanged(auth, async (user) => {
+            let isInitialized = false; // Guard against multiple resolutions
+
+            onAuthStateChanged(auth, async (user) => {
                 const app = window.app; 
                 
                 if (user) {
@@ -34,16 +37,22 @@ export const authOps = {
                     // --- CLOUD SYNC START ---
                     try {
                         const cloudData = await loadFromCloud(user.uid);
-                        if (cloudData) {
-                            console.log("📥 Downloading data from cloud...");
+                        
+                        // FIX #3: Defensive Cloud Conflict Guard
+                        const localTime = app.data.lastBackup || "";
+                        const cloudTime = cloudData?.lastBackup || "";
+
+                        if (cloudData && cloudTime > localTime) {
+                            console.log("📥 Cloud is newer: Downloading data...");
                             app.data.tasks = cloudData.tasks || [];
                             app.data.subjects = cloudData.subjects || [];
                             app.data.targetDate = cloudData.targetDate || app.data.targetDate;
+                            app.data.lastBackup = cloudData.lastBackup; // Sync timestamp
                             
-                            // Silent save to sync local storage, NO render yet (app.init handles it)
-                            app.saveData({ render: false }); 
+                            app.saveData({ render: true }); 
                         } else {
-                            console.log("📤 First login: Uploading local data.");
+                            console.log("📤 Local is newer: Uploading to cloud.");
+                            // This triggers saveToCloud via app.saveData
                             app.saveData({ render: false });
                         }
                     } catch (e) {
@@ -66,8 +75,11 @@ export const authOps = {
                     }, 500);
                 }
 
-                // Resolve the promise to let app.js continue
-                resolve(user); 
+                // FIX #1: Resolve init() promise only on the first run
+                if (!isInitialized) {
+                    isInitialized = true;
+                    resolve(user); 
+                }
             });
         });
     },
@@ -77,7 +89,7 @@ export const authOps = {
             await signInWithPopup(auth, googleProvider);
             document.getElementById('authModal').classList.add('hidden');
             await uiAlert("Welcome back, Scholar!");
-            window.app.navigate('dashboard'); // Explicit nav on manual login
+            window.app.navigate('dashboard'); 
         } catch (error) {
             console.error(error);
             await uiAlert(`Login Failed: ${error.message}`);
@@ -121,7 +133,6 @@ export const authOps = {
         const userImg = document.getElementById('navUserImg');
         const userName = document.getElementById('navUserName');
         
-        // Safety check if elements exist (Fixes potential null crash)
         if (loginBtn && userProfile) {
             if (isLoggedIn && window.app.data.user) {
                 loginBtn.classList.add('hidden');
